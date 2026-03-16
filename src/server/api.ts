@@ -149,6 +149,24 @@ export class ecchimailserverAPI {
 
         // 期限切れメールの定期クリーンアップ (1時間ごと)
         setInterval(() => this.cleanupExpiredMails(), 60 * 60 * 1000);
+
+        // DNSノード再発見 (1時間ごと)
+        setInterval(() => this.refreshPeers(dnsSeed, domain), 60 * 60 * 1000);
+    }
+
+    // ─── ピア再発見 ─────────────────────────────────────
+    private connectedUrls: Set<string> = new Set();
+
+    private async refreshPeers(dnsSeed: string, domain: string) {
+        const nodes = await this.resolveNodes(dnsSeed);
+        const newNodes = nodes
+            .filter(node => !node.includes(domain))
+            .filter(node => !this.connectedUrls.has(node));
+
+        for (const node of newNodes) {
+            console.log(`New peer discovered: ${node}`);
+            this.connectToPeer(node);
+        }
     }
 
     // ─── 期限切れメール削除 ─────────────────────────────
@@ -189,6 +207,7 @@ export class ecchimailserverAPI {
 
     // ─── ピア接続 ───────────────────────────────────────
     private connectToPeer(node: string) {
+        this.connectedUrls.add(node);
         const ws = new WebSocket(node);
         ws.onopen = () => {
             console.log(`Connected to peer: ${node}`);
@@ -200,6 +219,7 @@ export class ecchimailserverAPI {
         ws.onclose = () => {
             console.log(`Disconnected from peer: ${node}`);
             this.peers = this.peers.filter(p => p !== ws);
+            this.connectedUrls.delete(node);
         };
     }
 
