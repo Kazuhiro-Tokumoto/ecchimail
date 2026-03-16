@@ -1,4 +1,38 @@
 export class PointPairSchnorrP256 {
+  // ─── ECDH用 public メソッド ─────────────────────────────
+
+  /** 任意点のスカラー倍: k × Pt */
+  public scalarMultPublic(
+    Pt: [Uint8Array, Uint8Array],
+    k: Uint8Array,
+  ): [Uint8Array, Uint8Array] {
+    const ptBigint: [bigint, bigint] = [
+      this.bytesToBigInt(Pt[0]),
+      this.bytesToBigInt(Pt[1]),
+    ];
+    const kBigint = this.bytesToBigInt(k);
+    const result = this.scalarMult(ptBigint, kBigint);
+    return [this.BigintToBytes(result[0]), this.BigintToBytes(result[1])];
+  }
+
+  /** 点加算: P + Q */
+  public pointAddPublic(
+    P: [Uint8Array, Uint8Array],
+    Q: [Uint8Array, Uint8Array],
+  ): [Uint8Array, Uint8Array] {
+    const pJ: [bigint, bigint, bigint] = [
+      this.bytesToBigInt(P[0]),
+      this.bytesToBigInt(P[1]),
+      1n,
+    ];
+    const qJ: [bigint, bigint, bigint] = [
+      this.bytesToBigInt(Q[0]),
+      this.bytesToBigInt(Q[1]),
+      1n,
+    ];
+    const result = this.toAffine(this.addJJ(pJ, qJ));
+    return [this.BigintToBytes(result[0]), this.BigintToBytes(result[1])];
+  }
   private readonly P =
     0xffffffff00000001000000000000000000000000ffffffffffffffffffffffffn;
   private readonly N =
@@ -519,159 +553,3 @@ export class PointPairSchnorrP256 {
     return [this.BigintToBytes(pubKey[0]), this.BigintToBytes(pubKey[1])];
   }
 }
-// ============================================================
-//  統計ベンチマーク: min / max / mean / median / p95 / p99 / stddev
-// ============================================================
-async function test() {
-  function stats(samples: number[]) {
-    const sorted = [...samples].sort((a, b) => a - b);
-    const n = sorted.length;
-    const mean = samples.reduce((s, v) => s + v, 0) / n;
-    const variance = samples.reduce((s, v) => s + (v - mean) ** 2, 0) / n;
-    const stddev = Math.sqrt(variance);
-    const pct = (p: number) => {
-      const idx = Math.ceil((p / 100) * n) - 1;
-      return sorted[Math.max(0, Math.min(n - 1, idx))];
-    };
-    return {
-      min: sorted[0],
-      p25: pct(25),
-      median: pct(50),
-      mean,
-      p75: pct(75),
-      p95: pct(95),
-      p99: pct(99),
-      max: sorted[n - 1],
-      stddev,
-    };
-  }
-
-  function fmt(v: number) {
-    return v.toFixed(4) + "ms";
-  }
-
-  function printStats(label: string, s: ReturnType<typeof stats>) {
-    console.log(`\n── ${label} ──`);
-    console.log(`  min    : ${fmt(s.min)}`);
-    console.log(`  p25    : ${fmt(s.p25)}`);
-    console.log(`  median : ${fmt(s.median)}`);
-    console.log(`  mean   : ${fmt(s.mean)}`);
-    console.log(`  p75    : ${fmt(s.p75)}`);
-    console.log(`  p95    : ${fmt(s.p95)}`);
-    console.log(`  p99    : ${fmt(s.p99)}`);
-    console.log(`  max    : ${fmt(s.max)}`);
-    console.log(`  stddev : ${fmt(s.stddev)}`);
-  }
-
-  const dsa = new PointPairSchnorrP256();
-  const encoder = new TextEncoder();
-  const message = encoder.encode("Hello, ECDSA!");
-  const ITERATIONS = 1000;
-
-  const { privateKey, publicKey } = dsa.generateKeyPair();
-  const signature = dsa.sign(message, privateKey);
-
-  // ================================================================
-  //  自作署名
-  // ================================================================
-  console.log(`\n${"=".repeat(50)}`);
-  console.log(`  自作署名  (n=${ITERATIONS.toLocaleString()})`);
-  console.log("=".repeat(50));
-
-  const selfSignSamples: number[] = [];
-  for (let i = 0; i < ITERATIONS; i++) {
-    const t0 = performance.now();
-    dsa.sign(message, privateKey);
-    selfSignSamples.push(performance.now() - t0);
-  }
-
-  const selfVerifySamples: number[] = [];
-  for (let i = 0; i < ITERATIONS; i++) {
-    const t0 = performance.now();
-    dsa.verify(message, publicKey, signature);
-    selfVerifySamples.push(performance.now() - t0);
-  }
-
-  printStats("署名", stats(selfSignSamples));
-  printStats("検証", stats(selfVerifySamples));
-
-  // ================================================================
-  //  WebCrypto ECDSA P-256
-  // ================================================================
-  console.log(`\n${"=".repeat(50)}`);
-  console.log(`  WebCrypto ECDSA P-256  (n=${ITERATIONS.toLocaleString()})`);
-  console.log("=".repeat(50));
-
-  const ecKeyPair = await crypto.subtle.generateKey(
-    { name: "ECDSA", namedCurve: "P-256" },
-    true,
-    ["sign", "verify"],
-  );
-  const ecSig = await crypto.subtle.sign(
-    { name: "ECDSA", hash: "SHA-256" },
-    ecKeyPair.privateKey,
-    message,
-  );
-
-  const ecSignSamples: number[] = [];
-  for (let i = 0; i < ITERATIONS; i++) {
-    const t0 = performance.now();
-    await crypto.subtle.sign(
-      { name: "ECDSA", hash: "SHA-256" },
-      ecKeyPair.privateKey,
-      message,
-    );
-    ecSignSamples.push(performance.now() - t0);
-  }
-
-  const ecVerifySamples: number[] = [];
-  for (let i = 0; i < ITERATIONS; i++) {
-    const t0 = performance.now();
-    await crypto.subtle.verify(
-      { name: "ECDSA", hash: "SHA-256" },
-      ecKeyPair.publicKey,
-      ecSig,
-      message,
-    );
-    ecVerifySamples.push(performance.now() - t0);
-  }
-
-  printStats("署名", stats(ecSignSamples));
-  printStats("検証", stats(ecVerifySamples));
-  // ================================================================
-  //  比率サマリ (mean ベース)
-  // ================================================================
-  const ss = stats(selfSignSamples);
-  const sv = stats(selfVerifySamples);
-  const es = stats(ecSignSamples);
-  const ev = stats(ecVerifySamples);
-
-  console.log(`\n${"=".repeat(50)}`);
-  console.log("  比率サマリ (mean ベース)");
-  console.log("=".repeat(50));
-  console.log(
-    `自作 vs WebCrypto ECDSA  署名: ${(ss.mean / es.mean).toFixed(1)}倍   検証: ${(sv.mean / ev.mean).toFixed(1)}倍`,
-  );
-}
-
-// ================================================================
-//  正当性チェック
-// ================================================================
-const dsa = new PointPairSchnorrP256();
-const encoder = new TextEncoder();
-const message = encoder.encode("Hello, ECDSA!");
-const { privateKey, publicKey } = dsa.generateKeyPair();
-console.time("sign");
-const signature = dsa.sign(message, privateKey);
-console.timeEnd("sign");
-const fakeResult = dsa.verify(
-  encoder.encode("Fake message!"),
-  publicKey,
-  signature,
-);
-console.time("verify");
-const trueResult = dsa.verify(message, publicKey, signature);
-console.timeEnd("verify");
-console.log(`\n不正署名: ${fakeResult}`);
-console.log(`正当な署名: ${trueResult}`);
-test();

@@ -8,13 +8,13 @@
 
 ## 1. Overview
 
-ECCHImail は P-256 楕円曲線上に構築された、エンドツーエンド暗号化・匿名メッセージングプロトコルである。公開鍵ベースのアドレッシング、f-offset ECDH 鍵交換、P-256 Schnorr 署名、AES-256-GCM 暗号化を組み合わせ、機密性・完全性・匿名性を実現する。
+ECCHImail は P-256 楕円曲線上に構築された、エンドツーエンド暗号化・匿名メッセージングプロトコルである。公開鍵ベースのアドレッシング、f-offset ECDH 鍵交換、P-256 Schnorr 署名、SHA256-CTR + HMAC-SHA256 (Encrypt-then-MAC) 暗号化を組み合わせ、機密性・完全性・匿名性を実現する。
 
 ### 1.1 設計目標
 
 - **E2E暗号化:** メッセージ本文は中継サーバを含む第三者に一切読めない
 - **匿名性:** アドレスは生の公開鍵であり、実世界の身元と紐付かない
-- **完全性:** 全メッセージに P-256 Schnorr 署名を付与。改ざん検知は GCM 認証タグが担当
+- **完全性:** 全メッセージに P-256 Schnorr 署名を付与。改ざん検知は HMAC タグが担当
 - **鍵多様性:** f-offset により毎回異なる共有秘密を導出
 - **簡潔性:** 既存の ECCHI プリミティブ（p-256.ts, cipher.ts）上に構築
 - **サーバ検証可能:** 全コマンドに署名が必要。署名なしでは何もできない
@@ -27,7 +27,7 @@ ECCHImail は P-256 楕円曲線上に構築された、エンドツーエンド
 | 楕円曲線 | NIST P-256 (secp256r1) |
 | 鍵交換 | f-offset ECDH: (a+f) × Y |
 | 署名 | P-256 Schnorr (BIP340 スタイル) |
-| 共通鍵暗号 | AES-256-GCM |
+| 共通鍵暗号 | SHA256-CTR + HMAC-SHA256 (Encrypt-then-MAC) |
 | 鍵導出 | HKDF-SHA256 |
 | ハッシュ | SHA-256 |
 
@@ -112,13 +112,13 @@ ECCHImail は **f-offset ECDH** 方式を採用する。送信のたびにラン
    - IKM: `S.x`
    - salt: `SHA-256(A || Y || f)`
    - info: `"ECCHImail-v2"`
-   - 出力: 32 bytes → AES-256-GCM 鍵
+   - 出力: 32 bytes → SHA256-CTR + HMAC-SHA256 (Encrypt-then-MAC) 鍵
 
 ### 3.5 セキュリティ特性
 
 - **ECDLP 依存:** 攻撃者は Y, f, A を知っていても、x を知らなければ共有秘密 S を計算できない
 - **鍵多様性:** f が毎回異なるため、同一の送受信者ペアでも毎回異なる共有秘密が生成される
-- **MITM 耐性:** 攻撃者は a を知らないため (a+f) × Y を計算できない。偽の A を差し込んでも署名検証で即発覚。fG を改ざんしても GCM 認証タグで復号失敗
+- **MITM 耐性:** 攻撃者は a を知らないため (a+f) × Y を計算できない。偽の A を差し込んでも署名検証で即発覚。fG を改ざんしても HMAC タグで復号失敗
 - **Forward Secrecy について:** 長期秘密鍵 a が漏洩した場合、公開値 f から過去の共有秘密を復元可能。Bitcoin / Ethereum 等と同等のセキュリティモデル
 
 ---
@@ -133,7 +133,7 @@ message_id = SHA-256(timestamp || min(A, Y) || max(A, Y) || IV)
 
 - `timestamp`: 8 bytes, Unix 秒 (big-endian)
 - `min(A, Y)`, `max(A, Y)`: 公開鍵のバイト列を辞書順で比較し、小さい方を先に配置
-- `IV`: 12 bytes, AES-256-GCM の初期化ベクトル（CSPRNG）
+- `IV`: 16 bytes, SHA256-CTR + HMAC-SHA256 (Encrypt-then-MAC) の初期化ベクトル（CSPRNG）
 
 ### 4.2 設計根拠
 
@@ -162,9 +162,9 @@ message_id = SHA-256(timestamp || min(A, Y) || max(A, Y) || IV)
 | 受信者アドレス Y    | 65 bytes |
 | 鍵材料 f           | 32 bytes |
 | タイムスタンプ      | 8 bytes  |
-| IV                 | 12 bytes |
+| IV                 | 16 bytes |
 | ciphertext         | 可変長    |
-| auth tag           | 16 bytes |
+| HMAC tag           | 32 bytes |
 | Schnorr 署名       | 64 bytes |
 +--------------------+----------+
 ```
@@ -183,14 +183,14 @@ message_id = SHA-256(timestamp || min(A, Y) || max(A, Y) || IV)
 **タイムスタンプ (8 bytes):**  
 送信時刻の Unix 秒（uint64, big-endian）。サーバが受付時に鮮度チェックに使用。
 
-**IV (12 bytes):**  
-AES-256-GCM の初期化ベクトル。CSPRNG で生成。
+**IV (16 bytes):**  
+SHA256-CTR + HMAC-SHA256 (Encrypt-then-MAC) の初期化ベクトル。CSPRNG で生成。
 
 **ciphertext (可変長):**  
 平文メッセージの暗号化結果。
 
-**auth tag (16 bytes):**  
-GCM 認証タグ。改ざん検知を担当。
+**HMAC tag (32 bytes):**  
+HMAC-SHA256 タグ。改ざん検知を担当。
 
 **Schnorr 署名 (64 bytes):**  
 - r: 32 bytes（署名の R 点の X 座標）
@@ -201,10 +201,10 @@ GCM 認証タグ。改ざん検知を担当。
 
 ```
 [0x04||Ax||Ay] [0x04||Yx||Yy] [f] [timestamp] [IV] [ciphertext] [tag] [r||s]
-|<-- 65B ----->|<-- 65B ----->|32B|<-- 8B --->|12B|<- var ---->|16B |<64B>|
+|<-- 65B ----->|<-- 65B ----->|32B|<-- 8B --->|16B|<- var ---->|32B |<64B>|
 ```
 
-**最小メッセージサイズ（空本文）: 65 + 65 + 32 + 8 + 12 + 0 + 16 + 64 = 262 bytes**
+**最小メッセージサイズ（空本文）: 65 + 65 + 32 + 8 + 16 + 0 + 32 + 64 = 282 bytes**
 
 ---
 
@@ -240,7 +240,7 @@ ECCHImail ではメッセージの署名対象は **message_id** に一本化す
 
 | 機能 | 担当 |
 |---|---|
-| メッセージ改ざん検知 | AES-256-GCM 認証タグ |
+| メッセージ改ざん検知 | SHA256-CTR + HMAC-SHA256 (Encrypt-then-MAC) 認証タグ |
 | 送信証明 | 送信者による message_id への Schnorr 署名 |
 | 受信証明 | 受信者による message_id への ACK 署名 |
 
@@ -257,13 +257,13 @@ ECCHImail ではメッセージの署名対象は **message_id** に一本化す
   │
   ├─ 1. ランダムスカラー f を生成 (1 ≤ f < N)
   ├─ 2. 共有秘密 S = (a + f) × Y を計算
-  ├─ 3. AES鍵 = HKDF-SHA256(S.x, salt=SHA256(A||Y||f), info="ECCHImail-v2")
-  ├─ 4. IV を生成 (12 bytes, CSPRNG)
-  ├─ 5. 暗号文 = AES-256-GCM(AES鍵, IV, P)
+  ├─ 3. 共有鍵 = HKDF-SHA256(S.x, salt=SHA256(A||Y||f), info="ECCHImail-v2")
+  ├─ 4. IV を生成 (16 bytes, CSPRNG)
+  ├─ 5. 暗号文, hmac = Encrypt-then-MAC(共有鍵, IV, P)
   ├─ 6. timestamp = 現在の Unix 秒
   ├─ 7. message_id = SHA-256(timestamp || min(A,Y) || max(A,Y) || IV)
   ├─ 8. sig = Schnorr-Sign(a, message_id)
-  ├─ 9. メール = A || Y || f || timestamp || IV || ciphertext || tag || sig
+  ├─ 9. メール = A || Y || f || timestamp || IV || ciphertext || hmac || sig
   └─ 10. SEND コマンドでサーバに送信
 ```
 
@@ -301,8 +301,8 @@ ECCHImail ではメッセージの署名対象は **message_id** に一本化す
   ├─ 10. fG = f × G を計算
   ├─ 11. 実効公開鍵 A' = A + fG を計算
   ├─ 12. 共有秘密 S = x × A' を計算
-  ├─ 13. AES鍵 = HKDF-SHA256(S.x, salt=SHA256(A||Y||f), info="ECCHImail-v2")
-  ├─ 14. 平文 P = AES-256-GCM-Decrypt(AES鍵, IV, ciphertext, tag)
+  ├─ 13. 共有鍵 = HKDF-SHA256(S.x, salt=SHA256(A||Y||f), info="ECCHImail-v2")
+  ├─ 14. 平文 P = Decrypt-then-Verify(共有鍵, IV, ciphertext, hmac)
   ├─ 15. 復号成功 → ACK: Schnorr-Sign(x, message_id)
   └─ 16. サーバが ACK 署名を Y で検証 → OK ならメール削除
 ```
@@ -392,8 +392,8 @@ ECCHImail ではメッセージの署名対象は **message_id** に一本化す
 
 | 攻撃 | 対策 |
 |---|---|
-| 盗聴 | AES-256-GCM による E2E 暗号化。鍵は ECDH 共有秘密から導出 |
-| 改ざん | GCM 認証タグによる検知 |
+| 盗聴 | SHA256-CTR + HMAC-SHA256 (Encrypt-then-MAC) による E2E 暗号化。鍵は ECDH 共有秘密から導出 |
+| 改ざん | HMAC タグによる検知 |
 | なりすまし | Schnorr 署名による送信者認証 |
 | サーバによる盗聴 | サーバは暗号文のみ保管。秘密鍵を持たないため復号不可 |
 | リプレイ攻撃 | タイムスタンプ ±5分 検証 + IV のランダム性 |
@@ -409,7 +409,7 @@ ECCHImail ではメッセージの署名対象は **message_id** に一本化す
 | 項目 | レベル |
 |---|---|
 | ECDLP 安全性 | 128 bit（Pollard's rho） |
-| AES 安全性 | 256 bit |
+| 共通鍵暗号 安全性 | 256 bit |
 | SHA-256 衝突耐性 | 128 bit |
 | 全体の安全性 | 128 bit（最弱のリンクに依存） |
 
@@ -437,7 +437,7 @@ ECCHImail ではメッセージの署名対象は **message_id** に一本化す
 | モジュール | 用途 |
 |---|---|
 | `p-256.ts` | P-256 楕円曲線演算（点加算、スカラー倍、ECDH） |
-| `cipher.ts` | AES-256-GCM 暗号化/復号 |
+| `cipher.ts` | SHA256-CTR + HMAC-SHA256 (Encrypt-then-MAC) 暗号化/復号 |
 | `ecsh.ts` | P-256 Schnorr 署名（ECCHI 署名モジュール） |
 
 ### 11.2 新規実装が必要なもの
@@ -464,13 +464,13 @@ function composeMail(
   const aPrime = (senderPriv + f) % N;
   const S = scalarMul(recipientPub, aPrime);
 
-  // 3. AES鍵導出
+  // 3. 共有鍵導出
   const salt = sha256(concat(encode(senderPub), encode(recipientPub), encodeBigInt(f)));
-  const aesKey = hkdf(S.x, salt, "ECCHImail-v2", 32);
+  const sharedKey = hkdf(S.x, salt, "ECCHImail-v2", 32);
 
-  // 4. 暗号化
-  const iv = randomBytes(12);
-  const { ciphertext, tag } = aesGcmEncrypt(aesKey, iv, plaintext);
+  // 4. 暗号化 (SHA256-CTR + HMAC-SHA256)
+  const iv = randomBytes(16);
+  const { ciphertext, hmac } = encryptThenMAC(sharedKey, iv, plaintext);
 
   // 5. message_id
   const timestamp = BigInt(Math.floor(Date.now() / 1000));
@@ -491,9 +491,9 @@ function composeMail(
     encode(recipientPub),   // 65 bytes
     encodeBigInt(f),         // 32 bytes
     encodeUint64(timestamp), // 8 bytes
-    iv,                      // 12 bytes
+    iv,                      // 16 bytes
     ciphertext,              // variable
-    tag,                     // 16 bytes
+    hmac,                    // 32 bytes
     sig                      // 64 bytes
   );
 }
@@ -511,9 +511,9 @@ function openMail(
   const Y = decodePoint(mail.slice(65, 130));
   const f = decodeBigInt(mail.slice(130, 162));
   const timestamp = decodeUint64(mail.slice(162, 170));
-  const iv = mail.slice(170, 182);
-  const ciphertext = mail.slice(182, -80);  // variable
-  const tag = mail.slice(-80, -64);          // 16 bytes
+  const iv = mail.slice(170, 186);
+  const ciphertext = mail.slice(186, -96);  // variable
+  const hmac = mail.slice(-96, -64);          // 32 bytes
   const sig = mail.slice(-64);               // 64 bytes
 
   // 2. 点の有効性検証
@@ -534,12 +534,12 @@ function openMail(
   const APrime = pointAdd(A, fG);  // A + fG
   const S = scalarMul(APrime, recipientPriv);
 
-  // 5. AES鍵導出
+  // 5. 共有鍵導出
   const salt = sha256(concat(encode(A), encode(recipientPub), encodeBigInt(f)));
-  const aesKey = hkdf(S.x, salt, "ECCHImail-v2", 32);
+  const sharedKey = hkdf(S.x, salt, "ECCHImail-v2", 32);
 
-  // 6. 復号
-  return aesGcmDecrypt(aesKey, iv, ciphertext, tag);
+  // 6. 復号 (SHA256-CTR + HMAC-SHA256 検証)
+  return decryptThenVerify(sharedKey, iv, ciphertext, hmac);
 }
 ```
 

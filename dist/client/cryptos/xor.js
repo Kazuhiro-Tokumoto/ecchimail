@@ -133,16 +133,6 @@ export class cipher {
         return buf;
     }
     // ---------------------------------------------------------------------
-    // 意味なしストレッチ（1回のハッシュで遅延させる）
-    // ---------------------------------------------------------------------
-    stretch(data, salt) {
-        let h = this.concat(data, salt);
-        for (let i = 0; i < 1; i++) {
-            h = this.hmacSha256(data, this.concat(h, salt));
-        }
-        return h;
-    }
-    // ---------------------------------------------------------------------
     // HMAC-SHA256
     // ---------------------------------------------------------------------
     hmacSha256(key, data) {
@@ -199,7 +189,7 @@ export class cipher {
         }
         const iv = globalThis.crypto.getRandomValues(new Uint8Array(16));
         //変えるのめんどい
-        const stretchedKey = this.stretch(key, iv);
+        const stretchedKey = key;
         // HKDF で暗号化用とMAC用を独立して導出
         const encKey = this.hkdf(stretchedKey, iv, new TextEncoder().encode("enc"), 32);
         const macKey = this.hkdf(stretchedKey, iv, new TextEncoder().encode("mac"), 32);
@@ -225,7 +215,7 @@ export class cipher {
         const mac = encryptedWithIv.slice(-32);
         const ciphertext = encryptedWithIv.slice(16, -32);
         //変えるのめんどい
-        const stretchedKey = this.stretch(key, iv);
+        const stretchedKey = key;
         // HKDF で同じ鍵を再導出
         const encKey = this.hkdf(stretchedKey, iv, new TextEncoder().encode("enc"), 32);
         const macKey = this.hkdf(stretchedKey, iv, new TextEncoder().encode("mac"), 32);
