@@ -31,18 +31,18 @@ function buildUI() {
                 <div class="key-display" id="newPubKey"></div>
             </div>
             <div class="field">
-                <label>PINコード（ブラウザに鍵を保存する場合）</label>
-                <input type="password" inputmode="numeric" id="newPinInput" placeholder="数字を入力（空欄でスキップ）" />
+                <label>パスワード（鍵の保護に使用します）</label>
+                <input type="password" id="newPinInput" placeholder="パスワードを入力（必須）" />
             </div>
-            <button id="newKeyOk">確認しました</button>
+            <button id="newKeyOk">保存して続行</button>
         </div>
 
-        <!-- PIN入力パネル (保存済み鍵がある場合) -->
+        <!-- パスワード入力パネル (保存済み鍵がある場合) -->
         <div class="panel hidden" id="pinPanel">
             <h2>鍵の復元</h2>
             <div class="field">
-                <label>PINコード</label>
-                <input type="password" inputmode="numeric" id="pinInput" placeholder="PINを入力" />
+                <label>パスワード</label>
+                <input type="password" id="pinInput" placeholder="パスワードを入力" />
             </div>
             <button id="pinUnlockBtn">復元</button>
             <div class="result" id="pinResult"></div>
@@ -709,12 +709,13 @@ function bindEvents() {
 
     // 新規鍵生成確認ボタン
     newKeyOk.addEventListener("click", async () => {
-        const newPin = (document.getElementById("newPinInput") as HTMLInputElement).value.trim();
-        if (newPin) {
-            // PINで暗号化してlocalStorageに保存
-            await savePrivKeyWithPin(newPin, hexToBytes(privKeyHex));
-            log("鍵をPINで暗号化して保存しました", "ok");
+        const newPin = (document.getElementById("newPinInput") as HTMLInputElement).value;
+        if (!newPin) {
+            log("パスワードを入力してください", "err");
+            return;
         }
+        await savePrivKeyWithPin(newPin, hexToBytes(privKeyHex));
+        log("鍵をパスワードで暗号化して保存しました", "ok");
         document.getElementById("newKeyPanel")!.classList.add("hidden");
         proceedConnect();
     });
@@ -1293,15 +1294,10 @@ if (hasSavedKey()) {
     const pinResult = document.getElementById("pinResult")!;
     const wipeBtn = document.getElementById("wipeBtn")!;
 
-    // 数字のみ
-    pinInput.addEventListener("input", () => {
-        pinInput.value = pinInput.value.replace(/[^0-9]/g, "");
-    });
-
     pinUnlockBtn.addEventListener("click", async () => {
         const pin = pinInput.value;
         if (!pin) {
-            pinResult.textContent = "PINを入力してください";
+            pinResult.textContent = "パスワードを入力してください";
             pinResult.className = "result err";
             return;
         }
@@ -1324,7 +1320,7 @@ if (hasSavedKey()) {
             (document.getElementById("privKeyInput") as HTMLInputElement).value = privKeyHex;
             log("鍵を復元しました", "ok");
         } else {
-            pinResult.textContent = "PINが間違っています";
+            pinResult.textContent = "パスワードが間違っています";
             pinResult.className = "result err";
             pinUnlockBtn.disabled = false;
             pinUnlockBtn.textContent = "復元";
