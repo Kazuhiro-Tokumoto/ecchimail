@@ -30,11 +30,29 @@ function buildUI() {
                 <label>公開鍵 (アドレス)</label>
                 <div class="key-display" id="newPubKey"></div>
             </div>
+            <div class="field">
+                <label>PINコード（ブラウザに鍵を保存する場合）</label>
+                <input type="password" inputmode="numeric" id="newPinInput" placeholder="数字を入力（空欄でスキップ）" />
+            </div>
             <button id="newKeyOk">確認しました</button>
         </div>
 
+        <!-- PIN入力パネル (保存済み鍵がある場合) -->
+        <div class="panel hidden" id="pinPanel">
+            <h2>鍵の復元</h2>
+            <div class="field">
+                <label>PINコード</label>
+                <input type="password" inputmode="numeric" id="pinInput" placeholder="PINを入力" />
+            </div>
+            <button id="pinUnlockBtn">復元</button>
+            <div class="result" id="pinResult"></div>
+            <div style="margin-top:12px;text-align:center;">
+                <span class="wipe-link" id="wipeBtn">保存済みデータをすべて破棄</span>
+            </div>
+        </div>
+
         <!-- 接続パネル -->
-        <div class="panel" id="connectPanel">
+        <div class="panel hidden" id="connectPanel">
             <h2>接続設定</h2>
 
             <div class="toggle-row">
@@ -607,6 +625,16 @@ function applyStyles() {
             width: 100%;
             margin-top: 8px;
         }
+
+        .wipe-link {
+            color: var(--danger);
+            cursor: pointer;
+            font-size: 12px;
+            text-decoration: underline;
+        }
+        .wipe-link:hover {
+            opacity: 0.8;
+        }
     `;
     document.head.appendChild(style);
 }
@@ -680,7 +708,13 @@ function bindEvents() {
     });
 
     // 新規鍵生成確認ボタン
-    newKeyOk.addEventListener("click", () => {
+    newKeyOk.addEventListener("click", async () => {
+        const newPin = (document.getElementById("newPinInput") as HTMLInputElement).value.trim();
+        if (newPin) {
+            // PINで暗号化してlocalStorageに保存
+            await savePrivKeyWithPin(newPin, hexToBytes(privKeyHex));
+            log("鍵をPINで暗号化して保存しました", "ok");
+        }
         document.getElementById("newKeyPanel")!.classList.add("hidden");
         proceedConnect();
     });
@@ -1187,5 +1221,122 @@ function escapeHtml(s: string): string {
         .replace(/"/g, "&quot;");
 }
 
+// ─── PBKDF2 (WebCrypto API) ────────────────────────────
+async function deriveKeyFromPin(pin: string, salt: Uint8Array): Promise<Uint8Array> {
+    const keyMaterial = await crypto.subtle.importKey(
+        "raw",
+        new TextEncoder().encode(pin),
+        "PBKDF2",
+        false,
+        ["deriveBits"]
+    );
+    const bits = await crypto.subtle.deriveBits(
+        {
+            name: "PBKDF2",
+            salt: salt as Uint8Array<ArrayBuffer>,
+            iterations: 1000000,
+            hash: "SHA-256",
+        },
+        keyMaterial,
+        256
+    );
+    return new Uint8Array(bits);
+}
+
+// ─── 秘密鍵のPIN暗号化保存 ────────────────────────────
+const cipherInstance = new (await import("./cryptos/xor.js")).cipher();
+
+async function savePrivKeyWithPin(pin: string, privKey: Uint8Array): Promise<void> {
+    const salt = crypto.getRandomValues(new Uint8Array(32));
+    const aesKey = await deriveKeyFromPin(pin, salt);
+    const encrypted = cipherInstance.encrypt(privKey, aesKey);
+    localStorage.setItem("ecchimail_salt", uint8ToBase64(salt));
+    localStorage.setItem("ecchimail_encrypted_key", uint8ToBase64(encrypted));
+}
+
+async function loadPrivKeyWithPin(pin: string): Promise<Uint8Array | null> {
+    const saltB64 = localStorage.getItem("ecchimail_salt");
+    const encB64 = localStorage.getItem("ecchimail_encrypted_key");
+    if (!saltB64 || !encB64) return null;
+
+    const salt = base64ToUint8(saltB64);
+    const encrypted = base64ToUint8(encB64);
+    const aesKey = await deriveKeyFromPin(pin, salt);
+    return cipherInstance.decrypt(encrypted, aesKey);
+}
+
+function hasSavedKey(): boolean {
+    return localStorage.getItem("ecchimail_encrypted_key") !== null;
+}
+
+function wipeSavedData(): void {
+    localStorage.removeItem("ecchimail_salt");
+    localStorage.removeItem("ecchimail_encrypted_key");
+    // 保存済みメールも全削除
+    const keys: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith("ecchimail_")) keys.push(k);
+    }
+    keys.forEach(k => localStorage.removeItem(k));
+}
+
 // ─── 起動 ───────────────────────────────────────────────
 buildUI();
+
+// 保存済み鍵があればPINパネル、なければ接続パネルを表示
+if (hasSavedKey()) {
+    document.getElementById("pinPanel")!.classList.remove("hidden");
+
+    const pinUnlockBtn = document.getElementById("pinUnlockBtn") as HTMLButtonElement;
+    const pinInput = document.getElementById("pinInput") as HTMLInputElement;
+    const pinResult = document.getElementById("pinResult")!;
+    const wipeBtn = document.getElementById("wipeBtn")!;
+
+    // 数字のみ
+    pinInput.addEventListener("input", () => {
+        pinInput.value = pinInput.value.replace(/[^0-9]/g, "");
+    });
+
+    pinUnlockBtn.addEventListener("click", async () => {
+        const pin = pinInput.value;
+        if (!pin) {
+            pinResult.textContent = "PINを入力してください";
+            pinResult.className = "result err";
+            return;
+        }
+        pinUnlockBtn.disabled = true;
+        pinUnlockBtn.textContent = "復元中...";
+
+        const privKey = await loadPrivKeyWithPin(pin);
+        if (privKey) {
+            privKeyHex = bytesToHex(privKey);
+            const pubKeyPair = schnorr.privatekeytoPublicKey(privKey);
+            const pubKeyRaw = new Uint8Array(65);
+            pubKeyRaw[0] = 0x04;
+            pubKeyRaw.set(padTo32(pubKeyPair[0]), 1);
+            pubKeyRaw.set(padTo32(pubKeyPair[1]), 33);
+            pubKeyHex = bytesToHex(pubKeyRaw);
+
+            // PINパネル非表示 → 接続パネル表示（秘密鍵は自動入力済み）
+            document.getElementById("pinPanel")!.classList.add("hidden");
+            document.getElementById("connectPanel")!.classList.remove("hidden");
+            (document.getElementById("privKeyInput") as HTMLInputElement).value = privKeyHex;
+            log("鍵を復元しました", "ok");
+        } else {
+            pinResult.textContent = "PINが間違っています";
+            pinResult.className = "result err";
+            pinUnlockBtn.disabled = false;
+            pinUnlockBtn.textContent = "復元";
+        }
+    });
+
+    wipeBtn.addEventListener("click", () => {
+        if (confirm("保存済みの鍵とメールをすべて削除しますか？")) {
+            wipeSavedData();
+            location.reload();
+        }
+    });
+} else {
+    document.getElementById("connectPanel")!.classList.remove("hidden");
+}
