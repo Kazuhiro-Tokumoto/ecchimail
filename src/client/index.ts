@@ -1,13 +1,16 @@
 import { ecchimailclientAPI } from "./api.js";
 import { PointPairSchnorrP256 } from "./cryptos/ecdsa.js";
+
 // ─── State ──────────────────────────────────────────────
-let client = null;
-let privKeyHex = "";
-let pubKeyHex = "";
+let client: ecchimailclientAPI | null = null;
+let privKeyHex: string = "";
+let pubKeyHex: string = "";
 const schnorr = new PointPairSchnorrP256();
+
 // ─── UI構築 ─────────────────────────────────────────────
 function buildUI() {
     document.body.innerHTML = "";
+
     const app = el("div", "app");
     app.innerHTML = `
         <div class="header">
@@ -125,12 +128,13 @@ function buildUI() {
     applyStyles();
     bindEvents();
 }
-function el(tag, className) {
+
+function el(tag: string, className?: string): HTMLElement {
     const e = document.createElement(tag);
-    if (className)
-        e.className = className;
+    if (className) e.className = className;
     return e;
 }
+
 // ─── スタイル ───────────────────────────────────────────
 function applyStyles() {
     const style = document.createElement("style");
@@ -570,51 +574,54 @@ function applyStyles() {
     `;
     document.head.appendChild(style);
 }
+
 // ─── ログ ───────────────────────────────────────────────
-function log(msg, type = "") {
+function log(msg: string, type: "ok" | "err" | "" = "") {
     const logEl = document.getElementById("log");
-    if (!logEl)
-        return;
+    if (!logEl) return;
     const d = document.createElement("div");
-    if (type)
-        d.className = type;
+    if (type) d.className = type;
     const time = new Date().toLocaleTimeString();
     d.textContent = `[${time}] ${msg}`;
     logEl.prepend(d);
 }
+
 // ─── 接続モード状態 ────────────────────────────────────
-let connectMode = "seed";
-let protocol = "ws";
+let connectMode: "seed" | "direct" = "seed";
+let protocol: "ws" | "wss" = "ws";
+
 // ─── イベント ───────────────────────────────────────────
 function bindEvents() {
-    const connectBtn = document.getElementById("connectBtn");
-    const sendBtn = document.getElementById("sendBtn");
-    const lookBtn = document.getElementById("lookBtn");
-    const copyAddr = document.getElementById("copyAddr");
-    const newKeyOk = document.getElementById("newKeyOk");
-    const privKeyFab = document.getElementById("privKeyFab");
-    const privKeyPopup = document.getElementById("privKeyPopup");
-    const fabCopyPriv = document.getElementById("fabCopyPriv");
+    const connectBtn = document.getElementById("connectBtn") as HTMLButtonElement;
+    const sendBtn = document.getElementById("sendBtn") as HTMLButtonElement;
+    const lookBtn = document.getElementById("lookBtn") as HTMLButtonElement;
+    const copyAddr = document.getElementById("copyAddr") as HTMLButtonElement;
+    const newKeyOk = document.getElementById("newKeyOk") as HTMLButtonElement;
+    const privKeyFab = document.getElementById("privKeyFab") as HTMLButtonElement;
+    const privKeyPopup = document.getElementById("privKeyPopup")!;
+    const fabCopyPriv = document.getElementById("fabCopyPriv") as HTMLButtonElement;
+
     // 接続モード切替
-    const toggleSeed = document.getElementById("toggleSeed");
-    const toggleDirect = document.getElementById("toggleDirect");
+    const toggleSeed = document.getElementById("toggleSeed") as HTMLButtonElement;
+    const toggleDirect = document.getElementById("toggleDirect") as HTMLButtonElement;
     toggleSeed.addEventListener("click", () => {
         connectMode = "seed";
         toggleSeed.classList.add("active");
         toggleDirect.classList.remove("active");
-        document.getElementById("seedMode").classList.remove("hidden");
-        document.getElementById("directMode").classList.add("hidden");
+        document.getElementById("seedMode")!.classList.remove("hidden");
+        document.getElementById("directMode")!.classList.add("hidden");
     });
     toggleDirect.addEventListener("click", () => {
         connectMode = "direct";
         toggleDirect.classList.add("active");
         toggleSeed.classList.remove("active");
-        document.getElementById("directMode").classList.remove("hidden");
-        document.getElementById("seedMode").classList.add("hidden");
+        document.getElementById("directMode")!.classList.remove("hidden");
+        document.getElementById("seedMode")!.classList.add("hidden");
     });
+
     // プロトコル切替
-    const toggleWs = document.getElementById("toggleWs");
-    const toggleWss = document.getElementById("toggleWss");
+    const toggleWs = document.getElementById("toggleWs") as HTMLButtonElement;
+    const toggleWss = document.getElementById("toggleWss") as HTMLButtonElement;
     toggleWs.addEventListener("click", () => {
         protocol = "ws";
         toggleWs.classList.add("active");
@@ -625,6 +632,7 @@ function bindEvents() {
         toggleWss.classList.add("active");
         toggleWs.classList.remove("active");
     });
+
     connectBtn.addEventListener("click", handleConnect);
     sendBtn.addEventListener("click", handleSend);
     lookBtn.addEventListener("click", handleLook);
@@ -632,70 +640,76 @@ function bindEvents() {
         navigator.clipboard.writeText(pubKeyHex);
         log("アドレスをコピーしました", "ok");
     });
+
     // 新規鍵生成確認ボタン
     newKeyOk.addEventListener("click", () => {
-        document.getElementById("newKeyPanel").classList.add("hidden");
+        document.getElementById("newKeyPanel")!.classList.add("hidden");
         proceedConnect();
     });
+
     // 秘密鍵FABトグル
     privKeyFab.addEventListener("click", () => {
         privKeyPopup.classList.toggle("hidden");
     });
+
     // FABからコピー
     fabCopyPriv.addEventListener("click", () => {
         navigator.clipboard.writeText(privKeyHex);
         log("秘密鍵をコピーしました", "ok");
     });
+
     // ポップアップ外クリックで閉じる
     document.addEventListener("click", (e) => {
         if (!privKeyPopup.classList.contains("hidden") &&
-            !privKeyPopup.contains(e.target) &&
+            !privKeyPopup.contains(e.target as Node) &&
             e.target !== privKeyFab) {
             privKeyPopup.classList.add("hidden");
         }
     });
 }
+
 // ─── 接続先を決定 ──────────────────────────────────────
-function getTarget() {
+function getTarget(): string {
     if (connectMode === "seed") {
-        const seed = document.getElementById("dnsSeed").value.trim();
-        if (!seed)
-            throw new Error("DNS Seedを入力してください");
+        const seed = (document.getElementById("dnsSeed") as HTMLInputElement).value.trim();
+        if (!seed) throw new Error("DNS Seedを入力してください");
         return seed;
-    }
-    else {
-        const host = document.getElementById("directHost").value.trim();
-        const port = document.getElementById("directPort").value.trim();
-        if (!host)
-            throw new Error("アドレスを入力してください");
-        if (!port)
-            throw new Error("ポートを入力してください");
+    } else {
+        const host = (document.getElementById("directHost") as HTMLInputElement).value.trim();
+        const port = (document.getElementById("directPort") as HTMLInputElement).value.trim();
+        if (!host) throw new Error("アドレスを入力してください");
+        if (!port) throw new Error("ポートを入力してください");
         return `${protocol}://${host}:${port}`;
     }
 }
+
 // ─── 接続 ───────────────────────────────────────────────
-let pendingTarget = "";
+let pendingTarget: string = "";
+
 async function handleConnect() {
-    const connectBtn = document.getElementById("connectBtn");
-    const privInput = document.getElementById("privKeyInput").value.trim();
+    const connectBtn = document.getElementById("connectBtn") as HTMLButtonElement;
+    const privInput = (document.getElementById("privKeyInput") as HTMLInputElement).value.trim();
+
     connectBtn.disabled = true;
     connectBtn.textContent = "接続中...";
+
     try {
         pendingTarget = getTarget();
         log(`接続先: ${pendingTarget}`);
+
         // 鍵の準備
-        let privKey;
+        let privKey: Uint8Array;
         let isNewKey = false;
         if (privInput) {
             privKey = hexToBytes(privInput);
             log("秘密鍵を読み込みました");
-        }
-        else {
+        } else {
             const kp = schnorr.generateKeyPair();
             privKey = kp.privateKey;
             isNewKey = true;
             log("新しい鍵ペアを生成しました", "ok");
         }
+
         privKeyHex = bytesToHex(privKey);
         const pubKeyPair = schnorr.privatekeytoPublicKey(privKey);
         const pubKeyRaw = new Uint8Array(65);
@@ -703,101 +717,116 @@ async function handleConnect() {
         pubKeyRaw.set(padTo32(pubKeyPair[0]), 1);
         pubKeyRaw.set(padTo32(pubKeyPair[1]), 33);
         pubKeyHex = bytesToHex(pubKeyRaw);
+
         if (isNewKey) {
             // 新規鍵を表示して確認を待つ
-            document.getElementById("newPrivKey").textContent = privKeyHex;
-            document.getElementById("newPubKey").textContent = pubKeyHex;
-            document.getElementById("connectPanel").classList.add("hidden");
-            document.getElementById("newKeyPanel").classList.remove("hidden");
+            document.getElementById("newPrivKey")!.textContent = privKeyHex;
+            document.getElementById("newPubKey")!.textContent = pubKeyHex;
+            document.getElementById("connectPanel")!.classList.add("hidden");
+            document.getElementById("newKeyPanel")!.classList.remove("hidden");
             // proceedConnect は newKeyOk ボタンから呼ばれる
-        }
-        else {
+        } else {
             await proceedConnect();
         }
-    }
-    catch (e) {
+
+    } catch (e: any) {
         log(`接続失敗: ${e.message}`, "err");
         connectBtn.disabled = false;
         connectBtn.textContent = "接続";
     }
 }
+
 async function proceedConnect() {
-    const statusEl = document.getElementById("status");
+    const statusEl = document.getElementById("status")!;
+
     try {
         client = new ecchimailclientAPI(hexToBytes(privKeyHex));
         await client.connect(pendingTarget);
+
         // UI切替
-        document.getElementById("newKeyPanel").classList.add("hidden");
-        document.getElementById("connectPanel").classList.add("hidden");
-        document.getElementById("mainPanel").classList.remove("hidden");
-        document.getElementById("myAddress").textContent = pubKeyHex;
+        document.getElementById("newKeyPanel")!.classList.add("hidden");
+        document.getElementById("connectPanel")!.classList.add("hidden");
+        document.getElementById("mainPanel")!.classList.remove("hidden");
+        document.getElementById("myAddress")!.textContent = pubKeyHex;
         statusEl.textContent = "接続中";
         statusEl.className = "status connected";
+
         // FAB表示 + 秘密鍵セット
-        document.getElementById("privKeyFab").classList.remove("hidden");
-        document.getElementById("fabPrivKey").textContent = privKeyHex;
+        document.getElementById("privKeyFab")!.classList.remove("hidden");
+        document.getElementById("fabPrivKey")!.textContent = privKeyHex;
+
         log("サーバに接続しました", "ok");
         log(`アドレス: ${pubKeyHex.slice(0, 20)}...`, "ok");
-    }
-    catch (e) {
+
+    } catch (e: any) {
         log(`接続失敗: ${e.message}`, "err");
-        const connectBtn = document.getElementById("connectBtn");
+        const connectBtn = document.getElementById("connectBtn") as HTMLButtonElement;
         connectBtn.disabled = false;
         connectBtn.textContent = "接続";
-        document.getElementById("newKeyPanel").classList.add("hidden");
-        document.getElementById("connectPanel").classList.remove("hidden");
+        document.getElementById("newKeyPanel")!.classList.add("hidden");
+        document.getElementById("connectPanel")!.classList.remove("hidden");
     }
 }
+
 // ─── 送信 ───────────────────────────────────────────────
 async function handleSend() {
-    if (!client)
-        return;
-    const toAddr = document.getElementById("toAddress").value.trim();
-    const body = document.getElementById("messageBody").value;
-    const resultEl = document.getElementById("sendResult");
+    if (!client) return;
+
+    const toAddr = (document.getElementById("toAddress") as HTMLInputElement).value.trim();
+    const body = (document.getElementById("messageBody") as HTMLTextAreaElement).value;
+    const resultEl = document.getElementById("sendResult")!;
+
     if (!toAddr || !body) {
         resultEl.textContent = "宛先とメッセージを入力してください";
         resultEl.className = "result err";
         return;
     }
-    const sendBtn = document.getElementById("sendBtn");
+
+    const sendBtn = document.getElementById("sendBtn") as HTMLButtonElement;
     sendBtn.disabled = true;
+
     try {
         const to = hexToBytes(toAddr);
         const plaintext = new TextEncoder().encode(body);
         await client.send(to, plaintext);
+
         resultEl.textContent = "送信しました ✓";
         resultEl.className = "result ok";
-        document.getElementById("messageBody").value = "";
+        (document.getElementById("messageBody") as HTMLTextAreaElement).value = "";
         log(`送信完了 → ${toAddr.slice(0, 16)}...`, "ok");
-    }
-    catch (e) {
+
+    } catch (e: any) {
         resultEl.textContent = `送信失敗: ${e.message}`;
         resultEl.className = "result err";
         log(`送信エラー: ${e.message}`, "err");
     }
+
     sendBtn.disabled = false;
 }
+
 // ─── 受信 ───────────────────────────────────────────────
 async function handleLook() {
-    if (!client)
-        return;
-    const lookBtn = document.getElementById("lookBtn");
-    const countEl = document.getElementById("mailCount");
-    const listEl = document.getElementById("mailList");
+    if (!client) return;
+
+    const lookBtn = document.getElementById("lookBtn") as HTMLButtonElement;
+    const countEl = document.getElementById("mailCount")!;
+    const listEl = document.getElementById("mailList")!;
+
     lookBtn.disabled = true;
     lookBtn.textContent = "確認中...";
     log("メールを確認中...");
+
     try {
         const ids = await client.look();
         countEl.textContent = `${ids.length}件`;
+
         if (ids.length === 0) {
             listEl.innerHTML = '<div style="color:var(--text2);font-size:13px;margin-top:8px;">メールはありません</div>';
             log("メールなし");
-        }
-        else {
+        } else {
             listEl.innerHTML = "";
             log(`${ids.length}件のメールを検出`, "ok");
+
             for (const id of ids) {
                 const row = document.createElement("div");
                 row.className = "mail-row";
@@ -805,23 +834,25 @@ async function handleLook() {
                     <span class="mail-id">${id}</span>
                     <button class="small-btn open-mail-btn">開封</button>
                 `;
-                row.querySelector(".open-mail-btn").addEventListener("click", () => openMailModal(id));
+                row.querySelector(".open-mail-btn")!.addEventListener("click", () => openMailModal(id));
                 listEl.appendChild(row);
             }
         }
-    }
-    catch (e) {
+    } catch (e: any) {
         log(`LOOK失敗: ${e.message}`, "err");
     }
+
     lookBtn.disabled = false;
     lookBtn.textContent = "メール確認";
 }
-async function openMailModal(messageId) {
-    if (!client)
-        return;
+
+async function openMailModal(messageId: string) {
+    if (!client) return;
+
     // オーバーレイ作成
     const overlay = document.createElement("div");
     overlay.className = "modal-overlay";
+
     const modal = document.createElement("div");
     modal.className = "modal";
     modal.innerHTML = `
@@ -833,16 +864,19 @@ async function openMailModal(messageId) {
             <div class="modal-loading">取得中...</div>
         </div>
     `;
+
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
+
     // 閉じる
     const close = () => overlay.remove();
-    overlay.addEventListener("click", (e) => { if (e.target === overlay)
-        close(); });
-    modal.querySelector(".modal-close").addEventListener("click", close);
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    modal.querySelector(".modal-close")!.addEventListener("click", close);
+
     try {
         const result = await client.fetch(messageId);
-        const body = modal.querySelector(".modal-body");
+        const body = modal.querySelector(".modal-body")!;
+
         if (result) {
             const text = new TextDecoder().decode(result.plaintext);
             body.innerHTML = `
@@ -860,20 +894,19 @@ async function openMailModal(messageId) {
                 </div>
             `;
             log(`メール開封: ${messageId.slice(0, 16)}...`, "ok");
-        }
-        else {
+        } else {
             body.innerHTML = `<div class="modal-error">復号に失敗しました</div>`;
             log(`メール復号失敗: ${messageId.slice(0, 16)}...`, "err");
         }
-    }
-    catch (e) {
-        const body = modal.querySelector(".modal-body");
+    } catch (e: any) {
+        const body = modal.querySelector(".modal-body")!;
         body.innerHTML = `<div class="modal-error">取得エラー: ${escapeHtml(e.message)}</div>`;
         log(`メール取得失敗: ${e.message}`, "err");
     }
 }
+
 // ─── ユーティリティ ─────────────────────────────────────
-function hexToBytes(hex) {
+function hexToBytes(hex: string): Uint8Array {
     const clean = hex.startsWith("0x") ? hex.slice(2) : hex;
     const bytes = new Uint8Array(clean.length / 2);
     for (let i = 0; i < bytes.length; i++) {
@@ -881,22 +914,25 @@ function hexToBytes(hex) {
     }
     return bytes;
 }
-function bytesToHex(bytes) {
+
+function bytesToHex(bytes: Uint8Array): string {
     return Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
 }
-function padTo32(bytes) {
-    if (bytes.length === 32)
-        return bytes;
+
+function padTo32(bytes: Uint8Array): Uint8Array {
+    if (bytes.length === 32) return bytes;
     const out = new Uint8Array(32);
     out.set(bytes, 32 - bytes.length);
     return out;
 }
-function escapeHtml(s) {
+
+function escapeHtml(s: string): string {
     return s
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;");
 }
+
 // ─── 起動 ───────────────────────────────────────────────
 buildUI();

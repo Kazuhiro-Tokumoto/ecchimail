@@ -10,31 +10,70 @@ export class ecchimailserverAPI {
     wss;
     schnorr;
     hash;
-    constructor(port, dnsSeed, certPath, keyPath, domain) {
+    constructor(port, dnsSeed, domain, certPath, keyPath) {
         this.mailbox = new Map();
         this.peers = [];
         this.schnorr = new PointPairSchnorrP256();
         this.hash = new cipher();
-        // HTTPS + WSS
-        const httpsServer = createServer({
-            cert: readFileSync(certPath),
-            key: readFileSync(keyPath),
-        });
-        this.wss = new WebSocketServer({ server: httpsServer });
-        this.wss.on("connection", (ws) => {
-            ws.on("message", (raw) => {
-                this.handleMessage(ws, raw);
+        const useSSL = certPath !== undefined && keyPath !== undefined;
+        const protocol = useSSL ? "wss" : "ws";
+        if (useSSL) {
+            // WSS (TLS)
+            const httpsServer = createServer({
+                cert: readFileSync(certPath),
+                key: readFileSync(keyPath),
             });
-        });
-        httpsServer.listen(port, () => {
-            console.log(`ECCHImail node listening on wss://${domain}:${port}`);
-        });
-        // DNS TXT引いてノード一覧取得 → 自分を除外して接続
+            this.wss = new WebSocketServer({ server: httpsServer });
+            this.wss.on("connection", (ws) => {
+                ws.on("message", (raw) => {
+                    this.handleMessage(ws, raw);
+                });
+            });
+            httpsServer.listen(port, () => {
+                console.log(`ECCHImail node listening on wss://${domain}:${port}`);
+            });
+        }
+        else {
+            // WS (開発用)
+            this.wss = new WebSocketServer({ port });
+            this.wss.on("connection", (ws) => {
+                ws.on("message", (raw) => {
+                    this.handleMessage(ws, raw);
+                });
+            });
+            console.log(`ECCHImail node listening on ws://${domain}:${port}`);
+        }
+        // DNS TXTにはプロトコル付きで登録されている前提
+        // e.g. "wss://mail.shudo-physics.com:8080" or "ws://localhost:8080"
         this.resolveNodes(dnsSeed).then(nodes => {
             nodes
                 .filter(node => !node.includes(domain))
                 .forEach(node => this.connectToPeer(node));
         });
+        // 期限切れメールの定期クリーンアップ (1時間ごと)
+        setInterval(() => this.cleanupExpiredMails(), 60 * 60 * 1000);
+    }
+    // ─── 期限切れメール削除 ─────────────────────────────
+    cleanupExpiredMails() {
+        const now = this.now();
+        let deleted = 0;
+        for (const [pubkey, mails] of this.mailbox) {
+            const before = mails.length;
+            const kept = mails.filter(mail => {
+                const ts = this.extractTimestamp(mail);
+                return (now - ts) < ecchimailserverAPI.RETENTION_SECONDS;
+            });
+            deleted += before - kept.length;
+            if (kept.length === 0) {
+                this.mailbox.delete(pubkey);
+            }
+            else {
+                this.mailbox.set(pubkey, kept);
+            }
+        }
+        if (deleted > 0) {
+            console.log(`Cleanup: ${deleted} expired mails removed`);
+        }
     }
     // ─── DNS Seed ───────────────────────────────────────
     async resolveNodes(dnsSeed) {
@@ -225,8 +264,15 @@ export class ecchimailserverAPI {
         }
     }
     // ─── SEND ───────────────────────────────────────────
+    static MAX_MAIL_SIZE = 50 * 1024; // 50KB
+    static RETENTION_SECONDS = 5 * 24 * 60 * 60; // 5日
     handleSend(ws, msg) {
         const mail = this.toU8(msg.mail);
+        // メールサイズ上限チェック (50KB)
+        if (mail.length > ecchimailserverAPI.MAX_MAIL_SIZE) {
+            ws.send(JSON.stringify({ cmd: "SEND_FAIL", error: "mail too large (max 50KB)" }));
+            return;
+        }
         // メールサイズ最小チェック (282 bytes: 空本文+署名96バイト版)
         if (mail.length < 65 + 65 + 32 + 8 + 16 + 32 + 96) {
             ws.send(JSON.stringify({ cmd: "SEND_FAIL", error: "mail too short" }));
