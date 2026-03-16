@@ -15,8 +15,9 @@ type PubKey = [Uint8Array, Uint8Array];
 /** fetchの返り値 */
 export interface FetchedMail {
     messageId: string;
-    sender: string;      // 送信者公開鍵hex (04...130文字)
+    sender: string;         // 送信者公開鍵hex (04...130文字)
     plaintext: Uint8Array;
+    rawMail: Uint8Array;    // 暗号文メール全体 (ローカル保存用)
 }
 
 /** サーバレスポンス */
@@ -148,8 +149,9 @@ export class ecchimailclientAPI {
     // ─── 取得 ───────────────────────────────────────────
 
     /**
-     * message_idを指定してメールを取得・復号する
-     * @returns FetchedMail (messageId, sender, plaintext)。失敗時はnull
+     * message_idを指定してメールを取得・復号する（ACKしない）
+     * ACKは手動で呼ぶこと
+     * @returns FetchedMail (messageId, sender, plaintext, rawMail)。失敗時はnull
      */
     public async fetch(messageId: string): Promise<FetchedMail | null> {
         this.ensureConnected();
@@ -176,13 +178,33 @@ export class ecchimailclientAPI {
 
         if (!plaintext) return null;
 
-        // 送信者アドレスを抽出 (先頭65バイト)
         const sender = this.bytesToHex(mail.slice(0, 65));
 
-        // 復号成功したらACK
-        await this.ack(messageId);
+        return { messageId, sender, plaintext, rawMail: mail };
+    }
 
-        return { messageId, sender, plaintext };
+    /**
+     * ローカルに保存した暗号文(rawMail)を復号する
+     * サーバ接続不要
+     * @returns FetchedMail。失敗時はnull
+     */
+    public openLocal(rawMail: Uint8Array): FetchedMail | null {
+        const plaintext = this.openMail(rawMail);
+        if (!plaintext) return null;
+
+        const sender = this.bytesToHex(rawMail.slice(0, 65));
+
+        // message_idを再計算
+        const A = rawMail.slice(0, 65);
+        const Y = rawMail.slice(65, 130);
+        const tsBytes = rawMail.slice(162, 170);
+        const iv = rawMail.slice(170, 186);
+        const [minKey, maxKey] = this.sortKeys(A, Y);
+        const messageId = this.bytesToHex(
+            this.crypt.sha256(this.concat(tsBytes, minKey, maxKey, iv))
+        );
+
+        return { messageId, sender, plaintext, rawMail };
     }
 
     // ─── ACK ────────────────────────────────────────────

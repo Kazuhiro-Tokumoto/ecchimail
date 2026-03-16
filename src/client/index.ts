@@ -109,6 +109,13 @@ function buildUI() {
                 <div id="mailList"></div>
             </div>
 
+            <!-- 保存済み -->
+            <div class="section">
+                <h3>保存済みメール</h3>
+                <button id="savedBtn">一覧を表示</button>
+                <div id="savedList"></div>
+            </div>
+
             <!-- ログ -->
             <div class="section">
                 <h3>ログ</h3>
@@ -482,6 +489,14 @@ function applyStyles() {
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+        .saved-name {
+            flex: 1;
+            font-size: 13px;
+            color: var(--text);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
         .open-mail-btn {
             flex-shrink: 0;
         }
@@ -571,6 +586,27 @@ function applyStyles() {
             text-align: center;
             padding: 20px;
         }
+
+        .modal-save {
+            display: flex;
+            justify-content: flex-end;
+            margin-top: 16px;
+        }
+        .save-btn {
+            background: var(--surface2);
+            color: var(--text);
+            border: 1px solid var(--border);
+            padding: 8px 20px;
+            font-size: 13px;
+        }
+        .save-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+        .save-confirm-btn {
+            width: 100%;
+            margin-top: 8px;
+        }
     `;
     document.head.appendChild(style);
 }
@@ -636,6 +672,8 @@ function bindEvents() {
     connectBtn.addEventListener("click", handleConnect);
     sendBtn.addEventListener("click", handleSend);
     lookBtn.addEventListener("click", handleLook);
+    const savedBtn = document.getElementById("savedBtn") as HTMLButtonElement;
+    savedBtn.addEventListener("click", handleSavedList);
     copyAddr.addEventListener("click", () => {
         navigator.clipboard.writeText(pubKeyHex);
         log("アドレスをコピーしました", "ok");
@@ -849,7 +887,6 @@ async function handleLook() {
 async function openMailModal(messageId: string) {
     if (!client) return;
 
-    // オーバーレイ作成
     const overlay = document.createElement("div");
     overlay.className = "modal-overlay";
 
@@ -858,7 +895,7 @@ async function openMailModal(messageId: string) {
     modal.innerHTML = `
         <div class="modal-header">
             <h3>メール詳細</h3>
-            <button class="modal-close">×</button>
+            <button class="modal-close">x</button>
         </div>
         <div class="modal-body">
             <div class="modal-loading">取得中...</div>
@@ -868,10 +905,25 @@ async function openMailModal(messageId: string) {
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
 
-    // 閉じる
-    const close = () => overlay.remove();
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
-    modal.querySelector(".modal-close")!.addEventListener("click", close);
+    let acked = false;
+    const doAck = async () => {
+        if (acked || !client) return;
+        acked = true;
+        try {
+            await client.ack(messageId);
+            log(`ACK送信: ${messageId.slice(0, 16)}...`, "ok");
+        } catch (e: any) {
+            log(`ACK失敗: ${e.message}`, "err");
+        }
+    };
+
+    const close = async () => {
+        await doAck();
+        overlay.remove();
+    };
+
+    overlay.addEventListener("click", async (e) => { if (e.target === overlay) await close(); });
+    modal.querySelector(".modal-close")!.addEventListener("click", async () => await close());
 
     try {
         const result = await client.fetch(messageId);
@@ -892,7 +944,18 @@ async function openMailModal(messageId: string) {
                     <label>本文</label>
                     <div class="modal-value message">${escapeHtml(text)}</div>
                 </div>
+                <div class="modal-save">
+                    <button class="save-btn">保存</button>
+                </div>
             `;
+
+            // 保存ボタン
+            body.querySelector(".save-btn")!.addEventListener("click", () => {
+                showSaveDialog(result.rawMail, async () => {
+                    await doAck();
+                });
+            });
+
             log(`メール開封: ${messageId.slice(0, 16)}...`, "ok");
         } else {
             body.innerHTML = `<div class="modal-error">復号に失敗しました</div>`;
@@ -903,6 +966,196 @@ async function openMailModal(messageId: string) {
         body.innerHTML = `<div class="modal-error">取得エラー: ${escapeHtml(e.message)}</div>`;
         log(`メール取得失敗: ${e.message}`, "err");
     }
+}
+
+// ─── 保存ダイアログ ─────────────────────────────────────
+function showSaveDialog(rawMail: Uint8Array, onSaved: () => void) {
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+    overlay.style.zIndex = "300";
+
+    const dialog = document.createElement("div");
+    dialog.className = "modal";
+    dialog.style.maxWidth = "400px";
+    dialog.innerHTML = `
+        <div class="modal-header">
+            <h3>メールを保存</h3>
+            <button class="modal-close">x</button>
+        </div>
+        <div class="modal-body">
+            <div class="field">
+                <label>保存名（一意の名前をつけてください）</label>
+                <input type="text" class="save-name-input" placeholder="例: 友人からのメール" />
+            </div>
+            <div class="save-error hidden"></div>
+            <button class="save-confirm-btn">保存する</button>
+        </div>
+    `;
+
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+
+    const close = () => overlay.remove();
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    dialog.querySelector(".modal-close")!.addEventListener("click", close);
+
+    const input = dialog.querySelector(".save-name-input") as HTMLInputElement;
+    const errorEl = dialog.querySelector(".save-error") as HTMLElement;
+    const confirmBtn = dialog.querySelector(".save-confirm-btn") as HTMLButtonElement;
+
+    confirmBtn.addEventListener("click", () => {
+        const name = input.value.trim();
+        if (!name) {
+            errorEl.textContent = "名前を入力してください";
+            errorEl.classList.remove("hidden");
+            errorEl.style.color = "var(--danger)";
+            errorEl.style.fontSize = "12px";
+            errorEl.style.marginBottom = "8px";
+            return;
+        }
+
+        const key = `ecchimail_saved_${name}`;
+        if (localStorage.getItem(key) !== null) {
+            errorEl.textContent = "この名前は既に使われています";
+            errorEl.classList.remove("hidden");
+            errorEl.style.color = "var(--danger)";
+            errorEl.style.fontSize = "12px";
+            errorEl.style.marginBottom = "8px";
+            return;
+        }
+
+        // 暗号文をBase64で保存
+        localStorage.setItem(key, uint8ToBase64(rawMail));
+        log(`メール保存: "${name}"`, "ok");
+        onSaved();
+        close();
+    });
+}
+
+// ─── 保存済みメール一覧 ────────────────────────────────
+function getSavedMailNames(): string[] {
+    const names: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith("ecchimail_saved_")) {
+            names.push(key.slice("ecchimail_saved_".length));
+        }
+    }
+    return names.sort();
+}
+
+function loadSavedMail(name: string): Uint8Array | null {
+    const data = localStorage.getItem(`ecchimail_saved_${name}`);
+    if (!data) return null;
+    return base64ToUint8(data);
+}
+
+function deleteSavedMail(name: string): void {
+    localStorage.removeItem(`ecchimail_saved_${name}`);
+}
+
+// ─── 保存済み一覧表示 ──────────────────────────────────
+function handleSavedList() {
+    const listEl = document.getElementById("savedList")!;
+    const names = getSavedMailNames();
+
+    if (names.length === 0) {
+        listEl.innerHTML = '<div style="color:var(--text2);font-size:13px;margin-top:8px;">保存済みメールはありません</div>';
+        return;
+    }
+
+    listEl.innerHTML = "";
+    for (const name of names) {
+        const row = document.createElement("div");
+        row.className = "mail-row";
+        row.innerHTML = `
+            <span class="saved-name">${escapeHtml(name)}</span>
+            <button class="small-btn open-saved-btn">開く</button>
+            <button class="small-btn secondary delete-saved-btn">削除</button>
+        `;
+        row.querySelector(".open-saved-btn")!.addEventListener("click", () => openSavedMailModal(name));
+        row.querySelector(".delete-saved-btn")!.addEventListener("click", () => {
+            deleteSavedMail(name);
+            log(`保存済みメール削除: "${name}"`, "ok");
+            handleSavedList(); // 再描画
+        });
+        listEl.appendChild(row);
+    }
+}
+
+// ─── 保存済みメール開封モーダル ─────────────────────────
+function openSavedMailModal(name: string) {
+    if (!client) return;
+
+    const rawMail = loadSavedMail(name);
+    if (!rawMail) {
+        log(`保存済みメール "${name}" が見つかりません`, "err");
+        return;
+    }
+
+    const result = client.openLocal(rawMail);
+
+    const overlay = document.createElement("div");
+    overlay.className = "modal-overlay";
+
+    const modal = document.createElement("div");
+    modal.className = "modal";
+
+    if (result) {
+        const text = new TextDecoder().decode(result.plaintext);
+        modal.innerHTML = `
+            <div class="modal-header">
+                <h3>${escapeHtml(name)}</h3>
+                <button class="modal-close">x</button>
+            </div>
+            <div class="modal-body">
+                <div class="modal-field">
+                    <label>Message ID</label>
+                    <div class="modal-value mono">${escapeHtml(result.messageId)}</div>
+                </div>
+                <div class="modal-field">
+                    <label>送信者</label>
+                    <div class="modal-value mono">${escapeHtml(result.sender)}</div>
+                </div>
+                <div class="modal-field">
+                    <label>本文</label>
+                    <div class="modal-value message">${escapeHtml(text)}</div>
+                </div>
+            </div>
+        `;
+        log(`保存済みメール開封: "${name}"`, "ok");
+    } else {
+        modal.innerHTML = `
+            <div class="modal-header">
+                <h3>${escapeHtml(name)}</h3>
+                <button class="modal-close">x</button>
+            </div>
+            <div class="modal-body">
+                <div class="modal-error">復号に失敗しました（秘密鍵が異なる可能性があります）</div>
+            </div>
+        `;
+        log(`保存済みメール復号失敗: "${name}"`, "err");
+    }
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    const close = () => overlay.remove();
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+    modal.querySelector(".modal-close")!.addEventListener("click", close);
+}
+
+function uint8ToBase64(bytes: Uint8Array): string {
+    let binary = "";
+    for (const b of bytes) binary += String.fromCharCode(b);
+    return btoa(binary);
+}
+
+function base64ToUint8(base64: string): Uint8Array {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes;
 }
 
 // ─── ユーティリティ ─────────────────────────────────────

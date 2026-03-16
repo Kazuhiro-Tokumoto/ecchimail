@@ -1,6 +1,6 @@
 import { ecchimailserverAPI } from "./api.js";
 try {
-    const api = new ecchimailserverAPI(5000, "ecchi.manh2309.org", "localhost");
+    new ecchimailserverAPI(5000, "ecchi.manh2309.org", "localhost");
     console.log("起動した");
 }
 catch (e) {

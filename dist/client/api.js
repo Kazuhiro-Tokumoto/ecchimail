@@ -102,8 +102,9 @@ export class ecchimailclientAPI {
     }
     // ─── 取得 ───────────────────────────────────────────
     /**
-     * message_idを指定してメールを取得・復号する
-     * @returns FetchedMail (messageId, sender, plaintext)。失敗時はnull
+     * message_idを指定してメールを取得・復号する（ACKしない）
+     * ACKは手動で呼ぶこと
+     * @returns FetchedMail (messageId, sender, plaintext, rawMail)。失敗時はnull
      */
     async fetch(messageId) {
         this.ensureConnected();
@@ -124,11 +125,27 @@ export class ecchimailclientAPI {
         const plaintext = this.openMail(mail);
         if (!plaintext)
             return null;
-        // 送信者アドレスを抽出 (先頭65バイト)
         const sender = this.bytesToHex(mail.slice(0, 65));
-        // 復号成功したらACK
-        await this.ack(messageId);
-        return { messageId, sender, plaintext };
+        return { messageId, sender, plaintext, rawMail: mail };
+    }
+    /**
+     * ローカルに保存した暗号文(rawMail)を復号する
+     * サーバ接続不要
+     * @returns FetchedMail。失敗時はnull
+     */
+    openLocal(rawMail) {
+        const plaintext = this.openMail(rawMail);
+        if (!plaintext)
+            return null;
+        const sender = this.bytesToHex(rawMail.slice(0, 65));
+        // message_idを再計算
+        const A = rawMail.slice(0, 65);
+        const Y = rawMail.slice(65, 130);
+        const tsBytes = rawMail.slice(162, 170);
+        const iv = rawMail.slice(170, 186);
+        const [minKey, maxKey] = this.sortKeys(A, Y);
+        const messageId = this.bytesToHex(this.crypt.sha256(this.concat(tsBytes, minKey, maxKey, iv)));
+        return { messageId, sender, plaintext, rawMail };
     }
     // ─── ACK ────────────────────────────────────────────
     /**
