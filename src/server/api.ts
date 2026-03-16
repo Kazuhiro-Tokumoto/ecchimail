@@ -121,9 +121,7 @@ export class ecchimailserverAPI {
             });
             this.wss = new WebSocketServer({ server: httpsServer });
             this.wss.on("connection", (ws) => {
-                ws.on("message", (raw) => {
-                    this.handleMessage(ws, raw as Buffer);
-                });
+                this.handleNewConnection(ws);
             });
             httpsServer.listen(port, () => {
                 console.log(`ECCHImail node listening on wss://${domain}:${port}`);
@@ -132,9 +130,7 @@ export class ecchimailserverAPI {
             // WS (開発用)
             this.wss = new WebSocketServer({ port });
             this.wss.on("connection", (ws) => {
-                ws.on("message", (raw) => {
-                    this.handleMessage(ws, raw as Buffer);
-                });
+                this.handleNewConnection(ws);
             });
             console.log(`ECCHImail node listening on ws://${domain}:${port}`);
         }
@@ -211,6 +207,8 @@ export class ecchimailserverAPI {
         const ws = new WebSocket(node);
         ws.onopen = () => {
             console.log(`Connected to peer: ${node}`);
+            // ピアとして名乗る
+            ws.send(JSON.stringify({ cmd: "HELLO", role: "peer" }));
             this.peers.push(ws);
         };
         ws.onmessage = (event) => {
@@ -221,6 +219,43 @@ export class ecchimailserverAPI {
             this.peers = this.peers.filter(p => p !== ws);
             this.connectedUrls.delete(node);
         };
+    }
+
+    // ─── 新規接続の振り分け ─────────────────────────────
+    private handleNewConnection(ws: WebSocket) {
+        let identified = false;
+
+        const firstMessageHandler = (raw: Buffer) => {
+            try {
+                const msg = JSON.parse(raw.toString());
+                if (msg.cmd === "HELLO" && msg.role === "peer") {
+                    // ピアとして登録
+                    identified = true;
+                    console.log("Incoming peer connected");
+                    this.peers.push(ws);
+                    ws.off("message", firstMessageHandler);
+                    ws.on("message", (data) => {
+                        this.handlePeerMessage(ws, data as Buffer);
+                    });
+                    ws.on("close", () => {
+                        console.log("Incoming peer disconnected");
+                        this.peers = this.peers.filter(p => p !== ws);
+                    });
+                    return;
+                }
+            } catch { /* not JSON or not HELLO */ }
+
+            // HELLOじゃなかったらクライアントとして扱う
+            identified = true;
+            ws.off("message", firstMessageHandler);
+            // 最初のメッセージもクライアントコマンドとして処理
+            this.handleMessage(ws, raw);
+            ws.on("message", (data) => {
+                this.handleMessage(ws, data as Buffer);
+            });
+        };
+
+        ws.on("message", firstMessageHandler);
     }
 
     // ─── ユーティリティ ─────────────────────────────────
