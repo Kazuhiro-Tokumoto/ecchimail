@@ -874,6 +874,7 @@ async function handleLook() {
             for (const id of ids) {
                 const row = document.createElement("div");
                 row.className = "mail-row";
+                row.setAttribute("data-id", id);
                 row.innerHTML = `
                     <span class="mail-id">${id}</span>
                     <button class="small-btn open-mail-btn">開封</button>
@@ -915,6 +916,17 @@ async function openMailModal(messageId) {
         try {
             await client.ack(messageId);
             log(`ACK送信: ${messageId.slice(0, 16)}...`, "ok");
+            // 一覧から消す
+            const row = document.querySelector(`[data-id="${messageId}"]`);
+            if (row)
+                row.remove();
+            // 件数更新
+            const countEl = document.getElementById("mailCount");
+            const listEl = document.getElementById("mailList");
+            if (countEl && listEl) {
+                const remaining = listEl.querySelectorAll(".mail-row").length;
+                countEl.textContent = `${remaining}件`;
+            }
         }
         catch (e) {
             log(`ACK失敗: ${e.message}`, "err");

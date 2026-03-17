@@ -95,6 +95,14 @@ interface PeerFetchFail {
 
 type PeerCommand = PeerLook | PeerFetch | PeerDelete | PeerLookOk | PeerFetchOk | PeerFetchFail;
 
+/** ピア間メッセージの共通ラッパー */
+interface PeerEnvelope {
+    requestId: string;
+    timestamp: number;  // Unix秒 (UTC)
+    ttl: number;
+    payload: PeerCommand;
+}
+
 // ─── サーバ本体 ─────────────────────────────────────────
 
 export class ecchimailserverAPI {
@@ -103,6 +111,9 @@ export class ecchimailserverAPI {
     private wss: WebSocketServer;
     private schnorr: PointPairSchnorrP256;
     private hash: cipher;
+    private seenRequests: Map<string, number> = new Map(); // requestId → timestamp
+    private static readonly DEFAULT_TTL = 255;
+    private static readonly ENVELOPE_TIMEOUT = 30; // 秒
 
     constructor(port: number, dnsSeed: string, domain: string, certPath?: string, keyPath?: string) {
         this.mailbox = new Map();
@@ -148,6 +159,9 @@ export class ecchimailserverAPI {
 
         // DNSノード再発見 (1時間ごと)
         setInterval(() => this.refreshPeers(dnsSeed, domain), 60 * 60 * 1000);
+
+        // seenキャッシュクリーンアップ (30秒ごと)
+        setInterval(() => this.cleanupSeen(), 30 * 1000);
     }
 
     // ─── ピア再発見 ─────────────────────────────────────
@@ -575,18 +589,94 @@ export class ecchimailserverAPI {
 
     // ─── ピア間通信 ─────────────────────────────────────
 
+    /** seenキャッシュの古いエントリを削除 */
+    private cleanupSeen() {
+        const now = this.now();
+        for (const [id, ts] of this.seenRequests) {
+            if (now - ts > ecchimailserverAPI.ENVELOPE_TIMEOUT) {
+                this.seenRequests.delete(id);
+            }
+        }
+    }
+
+    /** ランダムなrequestIdを生成 */
+    private generateRequestId(): string {
+        const bytes = new Uint8Array(16);
+        globalThis.crypto.getRandomValues(bytes);
+        return this.bytesToHex(bytes);
+    }
+
+    /** PeerCommandをエンベロープに包んで送信 */
+    private sendToPeer(peer: WebSocket, payload: PeerCommand, requestId?: string, ttl?: number, timestamp?: number) {
+        const envelope: PeerEnvelope = {
+            requestId: requestId ?? this.generateRequestId(),
+            timestamp: timestamp ?? this.now(),
+            ttl: ttl ?? ecchimailserverAPI.DEFAULT_TTL,
+            payload,
+        };
+        peer.send(JSON.stringify(envelope));
+    }
+
+    /** 全ピアにブロードキャスト（エンベロープ付き） */
+    private broadcastToPeers(payload: PeerCommand, excludeWs?: WebSocket) {
+        const requestId = this.generateRequestId();
+        const timestamp = this.now();
+        this.seenRequests.set(requestId, timestamp);
+        this.peers.forEach(peer => {
+            if (peer !== excludeWs) {
+                this.sendToPeer(peer, payload, requestId, ecchimailserverAPI.DEFAULT_TTL, timestamp);
+            }
+        });
+    }
+
+    /** エンベロープを検証して中身を処理、必要なら転送 */
     private handlePeerMessage(ws: WebSocket, raw: Buffer) {
-        let msg: PeerCommand;
+        let envelope: PeerEnvelope;
         try {
-            msg = JSON.parse(raw.toString());
+            const parsed = JSON.parse(raw.toString());
+            // HELLOはエンベロープなし
+            if (parsed.cmd === "HELLO") return;
+            // レスポンス系（_OKや_FAIL）はエンベロープなしで直接来る
+            if (parsed.cmd?.endsWith("_OK") || parsed.cmd?.endsWith("_FAIL")) {
+                this.handlePeerResponse(ws, parsed);
+                return;
+            }
+            envelope = parsed as PeerEnvelope;
         } catch { return; }
 
+        // 1. requestId重複チェック
+        if (this.seenRequests.has(envelope.requestId)) return;
+
+        // 2. タイムスタンプ鮮度チェック (30秒)
+        if (Math.abs(this.now() - envelope.timestamp) > ecchimailserverAPI.ENVELOPE_TIMEOUT) return;
+
+        // 3. TTLチェック
+        if (envelope.ttl <= 0) return;
+
+        // 4. seenに追加
+        this.seenRequests.set(envelope.requestId, envelope.timestamp);
+
+        // 5. ペイロードを処理
+        const msg = envelope.payload;
         switch (msg.cmd) {
             case "PEER_LOOK":   this.handlePeerLook(ws, msg);   break;
             case "PEER_FETCH":  this.handlePeerFetch(ws, msg);  break;
             case "PEER_DELETE": this.handlePeerDelete(msg);      break;
             default: break;
         }
+
+        // 6. TTL-1して他のピアに転送（送信元を除く）
+        this.peers.forEach(peer => {
+            if (peer !== ws) {
+                this.sendToPeer(peer, msg, envelope.requestId, envelope.ttl - 1, envelope.timestamp);
+            }
+        });
+    }
+
+    /** レスポンス系メッセージの処理（エンベロープなし） */
+    private handlePeerResponse(ws: WebSocket, msg: any) {
+        // レスポンスはaskPeers系のonMessageハンドラが処理するのでここでは何もしない
+        // wsのmessageイベントに登録されたハンドラが拾う
     }
 
     private handlePeerLook(ws: WebSocket, msg: PeerLook) {
@@ -614,7 +704,7 @@ export class ecchimailserverAPI {
                 const timeout = setTimeout(() => resolve(), 3000);
                 const handler = (data: Buffer) => {
                     try {
-                        const resp = JSON.parse(data.toString()) as PeerLookOk;
+                        const resp = JSON.parse(data.toString());
                         if (resp.cmd === "PEER_LOOK_OK") {
                             results.push(...resp.ids);
                             clearTimeout(timeout);
@@ -624,7 +714,7 @@ export class ecchimailserverAPI {
                     } catch { /* ignore */ }
                 };
                 peer.on("message", handler);
-                peer.send(JSON.stringify({ cmd: "PEER_LOOK", pubkey: pubkeyHex } satisfies PeerLook));
+                this.sendToPeer(peer, { cmd: "PEER_LOOK", pubkey: pubkeyHex } satisfies PeerLook);
             });
         });
         await Promise.all(promises);
@@ -650,7 +740,7 @@ export class ecchimailserverAPI {
                     } catch { /* ignore */ }
                 };
                 peer.on("message", handler);
-                peer.send(JSON.stringify({ cmd: "PEER_FETCH", pubkey: pubkeyHex, messageId } satisfies PeerFetch));
+                this.sendToPeer(peer, { cmd: "PEER_FETCH", pubkey: pubkeyHex, messageId } satisfies PeerFetch);
             });
             if (result) return result;
         }
@@ -658,10 +748,7 @@ export class ecchimailserverAPI {
     }
 
     private broadcastDelete(pubkeyHex: string, messageId: string) {
-        const msg: PeerDelete = { cmd: "PEER_DELETE", pubkey: pubkeyHex, messageId };
-        this.peers.forEach(peer => {
-            peer.send(JSON.stringify(msg));
-        });
+        this.broadcastToPeers({ cmd: "PEER_DELETE", pubkey: pubkeyHex, messageId });
     }
 
     // ─── メールボックス操作 ─────────────────────────────
