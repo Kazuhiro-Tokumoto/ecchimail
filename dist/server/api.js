@@ -11,6 +11,7 @@ export class ecchimailserverAPI {
     schnorr;
     hash;
     seenRequests = new Map(); // requestId → timestamp
+    appClients = new Map(); // app名 → WebSocket
     static DEFAULT_TTL = 255;
     static ENVELOPE_TIMEOUT = 30; // 秒
     constructor(port, dnsSeed, domain, certPath, keyPath) {
@@ -55,6 +56,41 @@ export class ecchimailserverAPI {
         setInterval(() => this.refreshPeers(dnsSeed, domain), 60 * 60 * 1000);
         // seenキャッシュクリーンアップ (30秒ごと)
         setInterval(() => this.cleanupSeen(), 30 * 1000);
+        // ─── ローカルApp APIサーバ (localhost:5000) ──────────
+        const appServer = new WebSocketServer({ port: 5000 });
+        appServer.on("connection", (ws) => {
+            let appName = "";
+            ws.on("message", (raw) => {
+                try {
+                    const msg = JSON.parse(raw.toString());
+                    // 最初のメッセージで app 登録
+                    if (!appName && msg.app) {
+                        appName = msg.app;
+                        this.appClients.set(appName, ws);
+                        console.log(`App registered: ${appName}`);
+                        ws.send(JSON.stringify({ status: "registered", app: appName }));
+                        return;
+                    }
+                    // 登録済みなら、ピアに転送 (1KB制限)
+                    if (appName) {
+                        const size = raw.toString().length;
+                        if (size > 1024) {
+                            ws.send(JSON.stringify({ error: "payload too large (max 1KB)" }));
+                            return;
+                        }
+                        this.broadcastToPeers(msg, undefined, appName);
+                    }
+                }
+                catch { /* ignore */ }
+            });
+            ws.on("close", () => {
+                if (appName) {
+                    this.appClients.delete(appName);
+                    console.log(`App disconnected: ${appName}`);
+                }
+            });
+        });
+        console.log("App API listening on ws://localhost:5000");
     }
     // ─── ピア再発見 ─────────────────────────────────────
     connectedUrls = new Set();
@@ -443,23 +479,25 @@ export class ecchimailserverAPI {
         return this.bytesToHex(bytes);
     }
     /** PeerCommandをエンベロープに包んで送信 */
-    sendToPeer(peer, payload, requestId, ttl, timestamp) {
+    sendToPeer(peer, payload, requestId, ttl, timestamp, app) {
         const envelope = {
             requestId: requestId ?? this.generateRequestId(),
             timestamp: timestamp ?? this.now(),
             ttl: ttl ?? ecchimailserverAPI.DEFAULT_TTL,
             payload,
         };
+        if (app)
+            envelope.app = app;
         peer.send(JSON.stringify(envelope));
     }
     /** 全ピアにブロードキャスト（エンベロープ付き） */
-    broadcastToPeers(payload, excludeWs) {
+    broadcastToPeers(payload, excludeWs, app) {
         const requestId = this.generateRequestId();
         const timestamp = this.now();
         this.seenRequests.set(requestId, timestamp);
         this.peers.forEach(peer => {
             if (peer !== excludeWs) {
-                this.sendToPeer(peer, payload, requestId, ecchimailserverAPI.DEFAULT_TTL, timestamp);
+                this.sendToPeer(peer, payload, requestId, ecchimailserverAPI.DEFAULT_TTL, timestamp, app);
             }
         });
     }
@@ -493,23 +531,38 @@ export class ecchimailserverAPI {
         // 4. seenに追加
         this.seenRequests.set(envelope.requestId, envelope.timestamp);
         // 5. ペイロードを処理
-        const msg = envelope.payload;
-        switch (msg.cmd) {
-            case "PEER_LOOK":
-                this.handlePeerLook(ws, msg);
-                break;
-            case "PEER_FETCH":
-                this.handlePeerFetch(ws, msg);
-                break;
-            case "PEER_DELETE":
-                this.handlePeerDelete(msg);
-                break;
-            default: break;
+        if (envelope.app) {
+            // appメッセージの1KB制限
+            const payloadSize = JSON.stringify(envelope.payload).length;
+            if (payloadSize > 1024)
+                return;
+            // 外部アプリ宛: 登録済みのアプリに転送
+            const appWs = this.appClients.get(envelope.app);
+            if (appWs && appWs.readyState === 1) {
+                appWs.send(JSON.stringify(envelope.payload));
+            }
+            // 未登録でも転送はする（他のノードでは登録されてるかもしれない）
+        }
+        else {
+            // メール層: 既存のハンドラで処理
+            const msg = envelope.payload;
+            switch (msg.cmd) {
+                case "PEER_LOOK":
+                    this.handlePeerLook(ws, msg);
+                    break;
+                case "PEER_FETCH":
+                    this.handlePeerFetch(ws, msg);
+                    break;
+                case "PEER_DELETE":
+                    this.handlePeerDelete(msg);
+                    break;
+                default: break;
+            }
         }
         // 6. TTL-1して他のピアに転送（送信元を除く）
         this.peers.forEach(peer => {
             if (peer !== ws) {
-                this.sendToPeer(peer, msg, envelope.requestId, envelope.ttl - 1, envelope.timestamp);
+                this.sendToPeer(peer, envelope.payload, envelope.requestId, envelope.ttl - 1, envelope.timestamp, envelope.app);
             }
         });
     }
